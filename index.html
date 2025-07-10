@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign Language Recognition</title>
+    <style>
+        body {
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: #000;
+            font-family: Arial, sans-serif;
+        }
+        video {
+            max-width: 100%;
+            max-height: 100vh;
+        }
+        .settings {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .prediction {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.8);
+            padding: 15px;
+            border-radius: 5px;
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+        }
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+        }
+        select {
+            padding: 5px;
+            margin-left: 10px;
+        }
+        label {
+            color: white;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <video id="camera" autoplay playsinline></video>
+    <canvas id="output"></canvas>
+    <div class="prediction" id="prediction">No sign detected</div>
+    <div class="settings">
+        <label for="cameraSelect">Camera:</label>
+        <select id="cameraSelect"></select>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    
+    <script>
+        let currentStream = null;
+        let hands, camera;
+        
+        function recognizeSign(landmarks) {
+            if (!landmarks || landmarks.length === 0) return "No sign detected";
+            
+            const hand = landmarks[0];
+            const thumb = hand[4], index = hand[8], middle = hand[12], ring = hand[16], pinky = hand[20];
+            
+            // Simple sign recognition based on finger positions
+            const fingersUp = [
+                thumb.y < hand[3].y,  // thumb
+                index.y < hand[6].y,  // index
+                middle.y < hand[10].y, // middle
+                ring.y < hand[14].y,   // ring
+                pinky.y < hand[18].y   // pinky
+            ];
+            
+            const upCount = fingersUp.filter(Boolean).length;
+            
+            if (upCount === 0) return "A (Fist)";
+            if (upCount === 1 && fingersUp[1]) return "1 (Index)";
+            if (upCount === 2 && fingersUp[1] && fingersUp[2]) return "2 (Peace)";
+            if (upCount === 3 && fingersUp[1] && fingersUp[2] && fingersUp[3]) return "3";
+            if (upCount === 4 && !fingersUp[0]) return "4";
+            if (upCount === 5) return "5 (Open hand)";
+            if (fingersUp[1] && fingersUp[4] && upCount === 2) return "I Love You";
+            
+            return `${upCount} fingers up`;
+        }
+        
+        function onResults(results) {
+            const canvas = document.getElementById('output');
+            const ctx = canvas.getContext('2d');
+            
+            canvas.width = document.getElementById('camera').videoWidth;
+            canvas.height = document.getElementById('camera').videoHeight;
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (results.multiHandLandmarks) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    drawConnectors(ctx, landmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
+                    drawLandmarks(ctx, landmarks, {color: '#FF0000', lineWidth: 1});
+                }
+                
+                const sign = recognizeSign(results.multiHandLandmarks);
+                document.getElementById('prediction').textContent = sign;
+            } else {
+                document.getElementById('prediction').textContent = "No sign detected";
+            }
+        }
+        
+        async function getCameras() {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            return devices.filter(device => device.kind === 'videoinput');
+        }
+        
+        async function startCamera(deviceId = null) {
+            try {
+                if (currentStream) {
+                    currentStream.getTracks().forEach(track => track.stop());
+                }
+                
+                const constraints = { video: deviceId ? { deviceId } : true };
+                currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+                const video = document.getElementById('camera');
+                video.srcObject = currentStream;
+                
+                // Initialize MediaPipe Hands
+                hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+                hands.setOptions({
+                    maxNumHands: 2,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+                hands.onResults(onResults);
+                
+                camera = new Camera(video, {
+                    onFrame: async () => {
+                        await hands.send({image: video});
+                    },
+                    width: 640,
+                    height: 480
+                });
+                camera.start();
+                
+            } catch (err) {
+                let errorMsg = 'Camera error: ';
+                switch(err.name) {
+                    case 'NotAllowedError':
+                        errorMsg += 'Permission denied. Please allow camera access.';
+                        break;
+                    case 'NotFoundError':
+                        errorMsg += 'No camera found.';
+                        break;
+                    case 'NotReadableError':
+                        errorMsg += 'Camera in use by another app.';
+                        break;
+                    default:
+                        errorMsg += err.message;
+                }
+                const video = document.getElementById('camera');
+                video.style.display = 'none';
+                const errorDiv = document.createElement('div');
+                errorDiv.innerHTML = `<p style="color: white; text-align: center;">${errorMsg}</p>`;
+                errorDiv.style.position = 'absolute';
+                errorDiv.style.top = '50%';
+                errorDiv.style.left = '50%';
+                errorDiv.style.transform = 'translate(-50%, -50%)';
+                document.body.appendChild(errorDiv);
+            }
+        }
+        
+        async function populateCameraList() {
+            const cameras = await getCameras();
+            const select = document.getElementById('cameraSelect');
+            
+            cameras.forEach((camera, index) => {
+                const option = document.createElement('option');
+                option.value = camera.deviceId;
+                option.text = camera.label || `Camera ${index + 1}`;
+                select.appendChild(option);
+            });
+            
+            select.addEventListener('change', (e) => {
+                startCamera(e.target.value);
+            });
+        }
+        
+        async function init() {
+            await startCamera();
+            await populateCameraList();
+        }
+        
+        init();
+    </script>
+</body>
+</html>
